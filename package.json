@@ -11,7 +11,8 @@
     "lint:fix": "eslint . --ext .ts --fix",
     "format": "prettier --write \"src/**/*.ts\"",
     "prisma:generate": "prisma generate",
-    "prisma:migrate": "prisma migrate dev"
+    "prisma:migrate": "prisma migrate dev",
+     "postbuild": "ls -la dist/"
   },
   "keywords": [],
   "author": "",
