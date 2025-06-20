@@ -6,6 +6,7 @@ import { verifyElevenLabsWebhookSignature } from '../utils/elevenlabs';
 import { createStripePaymentLink, sendSMS } from '../utils/sms';
 import { startWebSocketConnection, stopWebSocketConnection, sendToElevenlabs } from '../utils/websockets';
 import { IAppointment } from '../models/appointment.model';
+import logger from '../utils/logger';
 
 const ELEVENLABS_AGENT_ID = process.env.ELEVENLABS_AGENT_ID;
 
@@ -33,7 +34,7 @@ export const getPractitioners = async (req: Request, res: Response): Promise<voi
         const spokenText = 'Here are the available practitioners: ' + lines.join('; ');
         res.json({ text: spokenText });
     } catch (error) {
-        console.error('[ElevenLabsController] Error getting practitioners:', error);
+        logger.error('[ElevenLabsController] Error getting practitioners:', error);
         res.status(500).json({ detail: 'Internal server error' });
     }
 };
@@ -54,11 +55,26 @@ export const checkAvailableTime = async (req: Request, res: Response): Promise<v
         return;
     }
 
+    // Robust date parsing and correction
+    let start = new Date(start_time);
+    if (isNaN(start.getTime())) {
+        // Try parsing as local date, fallback to now
+        start = new Date(Date.parse(start_time) || Date.now());
+    }
+    let finish = new Date(finish_time);
+    if (isNaN(finish.getTime()) || (finish.getTime() - start.getTime()) < 24 * 60 * 60 * 1000) {
+        // If finish_time is invalid or window < 24h, set finish_time to start_time + 25h
+        finish = new Date(start.getTime() + 25 * 60 * 60 * 1000);
+    }
+    // Convert both to ISO8601 with timezone (toISOString gives Zulu/UTC)
+    const startISO = start.toISOString();
+    const finishISO = finish.toISOString();
+
     try {
         const availabilityData = await getAvailabilityFromDentally(
             [practitionerId],
-            start_time,
-            finish_time,
+            startISO,
+            finishISO,
             durationNum
         );
 
@@ -101,6 +117,10 @@ const getUsdtAmount = async (patientType: string, consultation: string): Promise
 };
 
 export const createAppointment = async (req: Request, res: Response): Promise<void> => {
+    if (process.env.NODE_ENV === 'development') {
+        logger.info('[ElevenLabsController] ENTER createAppointment');
+        logger.info('[ElevenLabsController] Incoming request to create-appointment:', { headers: req.headers, body: req.body });
+    }
     const signature = req.headers['x-elevenlabs-signature'] as string | undefined;
     
     // Match FastAPI's raw body handling
@@ -112,6 +132,9 @@ export const createAppointment = async (req: Request, res: Response): Promise<vo
 
     try {
         const event = req.body;
+        if (process.env.NODE_ENV === 'development') {
+            logger.info('[ElevenLabsController] Event body:', JSON.stringify(event));
+        }
         if (event?.type !== 'post_call_transcription') {
             res.json({ received: true });
             return;
@@ -130,9 +153,12 @@ export const createAppointment = async (req: Request, res: Response): Promise<vo
         }
 
         const transcriptData = data?.transcript ?? '';
-        const response = await OpenAIModel(transcriptData);
-
+        const response :any = await OpenAIModel(transcriptData);
+        if (process.env.NODE_ENV === 'development') {
+            logger.info('[ElevenLabsController] GPT response:', JSON.stringify(response));
+        }
         if (!response) {
+            logger.warn('[ElevenLabsController] WARNING: GPT response is empty for transcript:', transcriptData);
             res.json({ received: true });
             return;
         }
@@ -164,15 +190,50 @@ export const createAppointment = async (req: Request, res: Response): Promise<vo
             }
         };
 
-        console.log('[ElevenLabsController] Formatted Patient Data:', patientData);
+        logger.info('[ElevenLabsController] Formatted Patient Data:', patientData);
 
-        const createdPatient = await createPatientAndStore(patientData);
+        if (process.env.NODE_ENV === 'development') {
+            logger.info('[ElevenLabsController] About to call createPatientAndStore with:', JSON.stringify(patientData));
+        }
+        let createdPatient: any;
+        try {
+            createdPatient = await createPatientAndStore(patientData);
+            if (process.env.NODE_ENV === 'development') {
+                logger.info('[ElevenLabsController] Created patient in Dentally:', JSON.stringify(createdPatient));
+            }
+        } catch (dentallyPatientError) {
+            if (process.env.NODE_ENV === 'development') {
+                if (dentallyPatientError) {
+                    logger.error('[ElevenLabsController] Error from Dentally (patient creation):', JSON.stringify(dentallyPatientError));
+                } else {
+                    logger.error('[ElevenLabsController] Error from DB or other (patient creation):', dentallyPatientError);
+                }
+            }
+            throw dentallyPatientError;
+        }
         let createdAppointment: IAppointment | null = null;
 
         if (createdPatient && createdPatient.id) {
             appointmentData.appointment.patient_id = createdPatient.id;
 
-            createdAppointment = await createAppointmentAndStore(appointmentData);
+            if (process.env.NODE_ENV === 'development') {
+                logger.info('[ElevenLabsController] About to call createAppointmentAndStore with:', JSON.stringify(appointmentData));
+            }
+            try {
+                createdAppointment = await createAppointmentAndStore(appointmentData);
+                if (process.env.NODE_ENV === 'development') {
+                    logger.info('[ElevenLabsController] Created appointment in Dentally:', JSON.stringify(createdAppointment));
+                }
+            } catch (dentallyAppointmentError) {
+                if (process.env.NODE_ENV === 'development') {
+                    if (dentallyAppointmentError) {
+                        logger.error('[ElevenLabsController] Error from Dentally (appointment creation):', JSON.stringify(dentallyAppointmentError));
+                    } else {
+                        logger.error('[ElevenLabsController] Error from DB or other (appointment creation):', dentallyAppointmentError);
+                    }
+                }
+                throw dentallyAppointmentError;
+            }
             if (createdAppointment) {
                 try {
                     const usdtAmount = await getUsdtAmount(
@@ -187,16 +248,16 @@ export const createAppointment = async (req: Request, res: Response): Promise<vo
                         const paymentUrl = createStripePaymentLink(usdtAmount);
                         if (paymentUrl) {
                             const smsMessage = `Hi ${patientName}, thank you for booking appointment with Wonder of Wellness, kindly pay on the link below to confirm your appointment ${paymentUrl}`;
-                            console.log('[ElevenLabsController] SMS Message:', smsMessage);
+                            logger.info('[ElevenLabsController] SMS Message:', smsMessage);
                             await sendSMS(patientPhone, smsMessage);
-                            console.log('[ElevenLabsController] Appointment and payment SMS sent successfully.');
+                            logger.info('[ElevenLabsController] Appointment and payment SMS sent successfully.');
                         }
                     }
                 } catch (error) {
-                    console.error('[ElevenLabsController] Error processing payment:', error);
+                    logger.error('[ElevenLabsController] Error processing payment:', error);
                 }
             } else {
-                console.error('[ElevenLabsController] Failed to create appointment.');
+                logger.error('[ElevenLabsController] Failed to create appointment.');
             }
         }
 
@@ -213,15 +274,19 @@ export const createAppointment = async (req: Request, res: Response): Promise<vo
             });
         }
 
+        if (process.env.NODE_ENV === 'development') {
+            logger.info('[ElevenLabsController] Final response to client:', { received: true });
+        }
+        res.json({ received: true });
     } catch (error) {
+        if (process.env.NODE_ENV === 'development') {
+            logger.error('[ElevenLabsController] Error in createAppointment:', error);
+        }
         // Match FastAPI's HTTPException format
         if (error instanceof Error) {
             res.status(500).json({ detail: error.message });
         } else {
             res.status(500).json({ detail: 'An unexpected error occurred' });
         }
-        return;
     }
-
-    res.json({ received: true });
 }; 

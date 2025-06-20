@@ -12,7 +12,7 @@
     "format": "prettier --write \"src/**/*.ts\"",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-     "postbuild": "ls -la dist/"
+    "postbuild": "ls -la dist/"
   },
   "keywords": [],
   "author": "",
@@ -34,6 +34,7 @@
     "openai": "^5.5.1",
     "stripe": "^18.2.1",
     "twilio": "^5.7.1",
+    "winston": "^3.17.0",
     "ws": "^8.18.2",
     "xlsx": "^0.18.5",
     "zod": "^3.25.67"

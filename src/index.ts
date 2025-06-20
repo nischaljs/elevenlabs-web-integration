@@ -8,6 +8,7 @@ import { connectDB, closeDB } from './config/database';
 import appointmentRoutes from './routes/appointment.routes';
 import dentallyRoutes from './routes/dentally.routes';
 import elevenlabsRoutes from './routes/elevenlabs.routes';
+import logger from './utils/logger';
 
 // Load environment variables
 dotenv.config();
@@ -35,7 +36,7 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Request logging middleware
 app.use((req, res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+  logger.info(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
   next();
 });
 
@@ -45,7 +46,7 @@ app.use(async (req, res, next) => {
     await connectDB();
     next();
   } catch (error) {
-    console.error('Database connection failed:', error);
+    logger.error('Database connection failed:', error);
     res.status(500).json({
       error: 'Database Error',
       message: 'Database connection failed',
@@ -95,7 +96,7 @@ app.use((req, res) => {
 
 // Error handling middleware
 app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
-  console.error(err.stack);
+  logger.error(err.stack);
   res.status(500).json({ error: 'Something broke!' });
 });
 
@@ -103,13 +104,13 @@ app.use((err: Error, req: express.Request, res: express.Response, next: express.
 connectDB()
   .then(() => {
     const server = app.listen(port, () => {
-      console.log(`Server is running on port ${port}`);
+      logger.info(`Server is running on port ${port}`);
     });
 
     // Handle graceful shutdown
     process.on('SIGINT', async () => {
       await closeDB();
-      console.log(' MongoDB connection closed');
+      logger.info(' MongoDB connection closed');
       process.exit(0);
     });
 
@@ -119,6 +120,6 @@ connectDB()
     });
   })
   .catch((error) => {
-    console.error('[Server] Failed to start server:', error);
+    logger.error('[Server] Failed to start server:', error);
     process.exit(1);
   });

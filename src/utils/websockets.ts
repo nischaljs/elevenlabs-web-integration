@@ -2,6 +2,7 @@ import WebSocket from 'ws';
 import { EventEmitter } from 'events';
 import mongoose from 'mongoose';
 import dotenv from 'dotenv';
+import logger from './logger';
 
 dotenv.config();
 
@@ -28,15 +29,15 @@ export const sendToElevenlabs = async (conversationId: string, data: any): Promi
 
     await new Promise(resolve => conn.ready.once('ready', resolve));
     conn.queue.emit('data', data);
-    console.log(`[WebSocket] Sent data to ${conversationId}`);
+    logger.info(`[WebSocket] Sent data to ${conversationId}`);
 };
 
 // Handle received messages from ElevenLabs
 const handleReceivedMessage = async (message: string, conversationId: string): Promise<void> => {
-    console.log(`[WebSocket] [${conversationId}] Received message`);
+    logger.info(`[WebSocket] [${conversationId}] Received message`);
     try {
         const parsed = JSON.parse(message);
-        console.log(`[WebSocket] [${conversationId}] Parsed message:`, parsed);
+        logger.info(`[WebSocket] [${conversationId}] Parsed message:`, parsed);
 
         if (parsed.type === 'conversation_initiation_metadata') {
             const db = mongoose.connection.db;
@@ -60,14 +61,14 @@ const handleReceivedMessage = async (message: string, conversationId: string): P
             });
         }
     } catch (error) {
-        console.error(`[WebSocket] [${conversationId}] Error handling message:`, error);
+        logger.error(`[WebSocket] [${conversationId}] Error handling message:`, error);
     }
 };
 
 // WebSocket connection handler for a single conversation
 export const startWebSocketConnection = (conversationId: string): void => {
     if (connections[conversationId]) {
-        console.log(`[WebSocket] [${conversationId}] WebSocket already running`);
+        logger.info(`[WebSocket] [${conversationId}] WebSocket already running`);
         return;
     }
 
@@ -88,7 +89,7 @@ export const startWebSocketConnection = (conversationId: string): void => {
 
             ws.on('open', () => {
                 conn.ready.emit('ready');
-                console.log(`[WebSocket] [${conversationId}] Connected to ElevenLabs`);
+                logger.info(`[WebSocket] [${conversationId}] Connected to ElevenLabs`);
             });
 
             ws.on('message', async (data: WebSocket.Data) => {
@@ -96,11 +97,11 @@ export const startWebSocketConnection = (conversationId: string): void => {
             });
 
             ws.on('error', (error) => {
-                console.error(`[WebSocket] [${conversationId}] WebSocket error:`, error);
+                logger.error(`[WebSocket] [${conversationId}] WebSocket error:`, error);
             });
 
             ws.on('close', () => {
-                console.log(`[WebSocket] [${conversationId}] WebSocket closed`);
+                logger.info(`[WebSocket] [${conversationId}] WebSocket closed`);
                 conn.ready.removeAllListeners();
                 if (!conn.stop.listenerCount('stop')) {
                     setTimeout(connect, 5000); // Reconnect after 5 seconds
@@ -111,12 +112,12 @@ export const startWebSocketConnection = (conversationId: string): void => {
             conn.queue.on('data', (data: any) => {
                 if (ws.readyState === WebSocket.OPEN) {
                     ws.send(JSON.stringify(data));
-                    console.log(`[WebSocket] [${conversationId}] Sent data`);
+                    logger.info(`[WebSocket] [${conversationId}] Sent data`);
                 }
             });
 
         } catch (error) {
-            console.error(`[WebSocket] [${conversationId}] Connection error:`, error);
+            logger.error(`[WebSocket] [${conversationId}] Connection error:`, error);
             if (!conn.stop.listenerCount('stop')) {
                 setTimeout(connect, 5000); // Reconnect after 5 seconds
             }
@@ -136,6 +137,6 @@ export const stopWebSocketConnection = (conversationId: string): void => {
         }
         clearTimeout(conn.thread);
         delete connections[conversationId];
-        console.log(`[WebSocket] [${conversationId}] WebSocket connection stopped`);
+        logger.info(`[WebSocket] [${conversationId}] WebSocket connection stopped`);
     }
 }; 
