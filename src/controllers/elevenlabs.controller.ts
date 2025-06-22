@@ -488,27 +488,26 @@ export const createPatientAndBookAppointment = async (req: Request, res: Respons
         res.status(400).json({ detail: 'Missing required fields: patient, appointment' });
         return;
     }
-    // Only require these fields from user
+    // Only require these fields from user (gender is NOT required)
     const {
         first_name,
         last_name,
         date_of_birth,
-        gender,
         address_line_1,
         postcode,
         mobile_phone
     } = patient;
-    if (!first_name || !last_name || !date_of_birth || gender === undefined || !address_line_1 || !postcode || !mobile_phone) {
-        res.status(400).json({ detail: 'Missing required patient fields: first_name, last_name, date_of_birth, gender, address_line_1, postcode, mobile_phone' });
+    if (!first_name || !last_name || !date_of_birth || !address_line_1 || !postcode || !mobile_phone) {
+        res.status(400).json({ detail: 'Missing required patient fields: first_name, last_name, date_of_birth, address_line_1, postcode, mobile_phone' });
         return;
     }
-    // Fill defaults for other fields
+    // Fill defaults for other fields, always set gender to true
     const patientPayload = {
         title: patient.title || 'Mr',
         first_name,
         last_name,
         date_of_birth,
-        gender,
+        gender: true, // always set to true (male)
         ethnicity: '99', // default as requested
         address_line_1,
         postcode,
