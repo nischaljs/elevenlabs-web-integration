@@ -450,7 +450,7 @@ export const getFirstAvailablePractitioner = async (req: Request, res: Response)
         let practitionersRaw = await fetchActivePractitioners();
         if (!practitionersRaw || practitionersRaw.length === 0) {
             res.status(404).json({ detail: 'No active practitioners found.' });
-            return;git
+            return;
         }
         practitionersRaw = shufflePractitioners(practitionersRaw);
         const practitionerIds = practitionersRaw.map((doc: any) => doc.id);
