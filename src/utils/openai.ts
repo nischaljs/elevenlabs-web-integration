@@ -1,6 +1,6 @@
 import { OpenAI } from 'openai';
 import dotenv from 'dotenv';
-import logger from './logger';
+import logForDev from './logger';
 
 dotenv.config();
 
@@ -43,7 +43,7 @@ ${data}`;
 
   try {
     if (process.env.NODE_ENV === 'development') {
-      logger.info('[OpenAI] Sending prompt:', { prompt });
+      logForDev('Sending prompt:', { prompt });
     }
     const response = await client.chat.completions.create({
       model: "gpt-4",
@@ -53,7 +53,7 @@ ${data}`;
       temperature: 0
     });
     if (process.env.NODE_ENV === 'development') {
-      logger.info('[OpenAI] Raw response:', { response: JSON.stringify(response) });
+      logForDev('Raw response:', { response: JSON.stringify(response) });
     }
     const responseText = response.choices[0].message.content?.trim() || '';
     const cleanedText = responseText.replace("```json\n", "").replace("\n```", "");
@@ -61,9 +61,9 @@ ${data}`;
     return JSON.parse(cleanedText);
   } catch (error) {
     if (process.env.NODE_ENV === 'development') {
-      logger.error('[OpenAI] Request failed:', { error });
+      logForDev('Request failed:', { error });
     }
-    logger.error('OpenAI request failed:', { error });
+    logForDev('OpenAI request failed:', { error });
     return null;
   }
 } 

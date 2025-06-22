@@ -6,7 +6,8 @@ import { verifyElevenLabsWebhookSignature } from '../utils/elevenlabs';
 import { createStripePaymentLink, sendSMS } from '../utils/sms';
 import { startWebSocketConnection, stopWebSocketConnection, sendToElevenlabs } from '../utils/websockets';
 import { IAppointment } from '../models/appointment.model';
-import logger from '../utils/logger';
+import logForDev from '../utils/logger';
+import axios from 'axios';
 
 const ELEVENLABS_AGENT_ID = process.env.ELEVENLABS_AGENT_ID;
 
@@ -17,24 +18,54 @@ interface AvailabilitySlot {
 
 export const getPractitioners = async (req: Request, res: Response): Promise<void> => {
     try {
-        const practitioners = await Practitioner.find({ active: true }).limit(15);
+        // Fetch practitioners from Dentally API
+        const dentallyApiKey = process.env.DENTALLY_API_KEY;
+        const dentallyBaseUrl = process.env.DENTALLY_BASE_URL || 'https://api.dentally.co/v1';
+        const siteId = process.env.DENTALLY_SITE_ID; // Use env variable for site ID
+        const response = await axios.get(`${dentallyBaseUrl}/practitioners`, {
+            headers: {
+                'Authorization': `Bearer ${dentallyApiKey}`,
+                'User-Agent': 'MyApp/1.0',
+            },
+            params: { site_id: siteId }
+        });
+        const practitionersRaw = response.data.practitioners || [];
+        logForDev('Practitioners from Dentally:', JSON.stringify(practitionersRaw.slice(0, 5)));
 
-        const lines = practitioners.map(doc => {
-            const user = doc.user || {};
-            const fullName = `${user.first_name || ''} ${user.last_name || ''}`.trim();
-            const practitionerId = doc.id;
-            return fullName && practitionerId ? `${fullName} (${practitionerId})` : null;
-        }).filter(Boolean);
+        // Log the total number of practitioners received
+        logForDev('Total practitioners from Dentally:', practitionersRaw.length);
 
-        if (lines.length === 0) {
-            res.json({ text: 'Sorry, no active practitioners are currently available.' });
-            return;
+        // Filter for active practitioners
+        const activePractitioners = practitionersRaw.filter((doc: any) => doc.active === true);
+        logForDev('Active practitioners count:', activePractitioners.length);
+
+        // Log the first 10 active practitioners' names and IDs
+        activePractitioners.slice(0, 10).forEach((doc: any, i: number) => {
+          logForDev(`Active Practitioner #${i}:`, doc.user?.first_name, doc.user?.last_name, 'ID:', doc.id);
+        });
+
+        if (activePractitioners.length === 0) {
+           // Fallback: fetch from local MongoDB
+           const dbPractitioners = await Practitioner.find({ active: true }).lean();
+           logForDev('Fetched active practitioners from DB:', dbPractitioners.length);
+           if (dbPractitioners.length === 0) {
+             res.json({ text: "Sorry, no active practitioners are currently available." });
+             return;
+           }
+           const formattedDb = dbPractitioners
+             .map((doc: any) => `${doc.user?.first_name || ''} ${doc.user?.last_name || ''} (${doc.id})`)
+             .join('; ');
+           res.json({ text: `Here are the available practitioners: ${formattedDb}` });
+           return;
         }
 
-        const spokenText = 'Here are the available practitioners: ' + lines.join('; ');
-        res.json({ text: spokenText });
+        const formatted = activePractitioners
+          .map((doc: any) => `${doc.user?.first_name || ''} ${doc.user?.last_name || ''} (${doc.id})`)
+          .join('; ');
+
+        res.json({ text: `Here are the available practitioners: ${formatted}` });
     } catch (error) {
-        logger.error('[ElevenLabsController] Error getting practitioners:', error);
+        logForDev('Error getting practitioners from Dentally:', error);
         res.status(500).json({ detail: 'Internal server error' });
     }
 };
@@ -97,7 +128,7 @@ export const checkAvailableTime = async (req: Request, res: Response): Promise<v
         });
     } catch (error) {
         // Match FastAPI's error response format
-        res.status(500).json({ detail: 'Something Went Wrong in Backend' });
+        res.status(500).json({ available_slots: " ",message: 'Something Went Wrong in Backend' });
     }
 };
 
@@ -117,176 +148,397 @@ const getUsdtAmount = async (patientType: string, consultation: string): Promise
 };
 
 export const createAppointment = async (req: Request, res: Response): Promise<void> => {
+    logForDev('--- createAppointment called ---');
     if (process.env.NODE_ENV === 'development') {
-        logger.info('[ElevenLabsController] ENTER createAppointment');
-        logger.info('[ElevenLabsController] Incoming request to create-appointment:', { headers: req.headers, body: req.body });
+        logForDev('ENTER createAppointment');
+        logForDev('Incoming request to create-appointment:', { headers: req.headers, body: req.body });
     }
     const signature = req.headers['x-elevenlabs-signature'] as string | undefined;
-    
-    // Match FastAPI's raw body handling
     const rawBody = JSON.stringify(req.body);
+    logForDev('Signature:', signature);
     if (signature && !verifyElevenLabsWebhookSignature(rawBody, signature)) {
+        logForDev('Invalid webhook signature');
         res.status(401).json({ detail: 'Invalid signature' });
+        logForDev('Returned 401 for invalid signature');
         return;
     }
 
-    try {
-        const event = req.body;
-        if (process.env.NODE_ENV === 'development') {
-            logger.info('[ElevenLabsController] Event body:', JSON.stringify(event));
-        }
-        if (event?.type !== 'post_call_transcription') {
-            res.json({ received: true });
-            return;
-        }
+    const event = req.body;
+    logForDev('Parsed event:', event);
 
-        const data = event?.data ?? {};
-        if (data?.agent_id !== ELEVENLABS_AGENT_ID) {
-            res.json({ received: true });
-            return;
-        }
-
-        // Start WebSocket connection for this conversation
-        const conversationId = data?.conversation_id;
-        if (conversationId) {
-            startWebSocketConnection(conversationId);
-        }
-
-        const transcriptData = data?.transcript ?? '';
-        const response :any = await OpenAIModel(transcriptData);
-        if (process.env.NODE_ENV === 'development') {
-            logger.info('[ElevenLabsController] GPT response:', JSON.stringify(response));
-        }
-        if (!response) {
-            logger.warn('[ElevenLabsController] WARNING: GPT response is empty for transcript:', transcriptData);
-            res.json({ received: true });
-            return;
-        }
-
-        const patientData = {
-            patient: {
-                title: response?.patient_title ?? 'Mr',
-                first_name: response?.patient_first_name ?? '',
-                last_name: response?.patient_last_name ?? '',
-                date_of_birth: response?.patient_dob ?? '',
-                gender: response?.patient_gender ?? true,
-                ethnicity: response?.patient_ethnicity ?? '',
-                address_line_1: response?.patient_address_line_1 ?? '',
-                postcode: response?.patient_postcode ?? '',
-                payment_plan_id: parseInt(response?.patient_payment_plan_id ?? '0'),
-                payment_plan: [parseInt(response?.patient_payment_plan_id ?? '0')],
-                email_address: response?.patient_email ?? '',
-                mobile_phone: response?.patient_phone_number ?? ''
-            }
-        };
-
-        const appointmentData = {
-            appointment: {
-                start_time: response?.appointment_start_time ?? '',
-                finish_time: response?.appointment_finish_time ?? '',
-                patient_id: response?.appointment_patient_id ?? '',
-                practitioner_id: response?.booked_practitioner_id ?? '',
-                reason: response?.appointment_reason ?? ''
-            }
-        };
-
-        logger.info('[ElevenLabsController] Formatted Patient Data:', patientData);
-
-        if (process.env.NODE_ENV === 'development') {
-            logger.info('[ElevenLabsController] About to call createPatientAndStore with:', JSON.stringify(patientData));
-        }
-        let createdPatient: any;
+    // --- Webhook path ---
+    if (event?.type === 'post_call_transcription') {
+        logForDev('Webhook path triggered');
         try {
-            createdPatient = await createPatientAndStore(patientData);
             if (process.env.NODE_ENV === 'development') {
-                logger.info('[ElevenLabsController] Created patient in Dentally:', JSON.stringify(createdPatient));
+                logForDev('Event body:', JSON.stringify(event));
             }
-        } catch (dentallyPatientError) {
-            if (process.env.NODE_ENV === 'development') {
-                if (dentallyPatientError) {
-                    logger.error('[ElevenLabsController] Error from Dentally (patient creation):', JSON.stringify(dentallyPatientError));
-                } else {
-                    logger.error('[ElevenLabsController] Error from DB or other (patient creation):', dentallyPatientError);
+            const data = event?.data ?? {};
+            logForDev('Webhook data:', data);
+            if (data?.agent_id !== ELEVENLABS_AGENT_ID) {
+                logForDev('Agent ID mismatch:', data?.agent_id, ELEVENLABS_AGENT_ID);
+                res.json({ received: true });
+                logForDev('Returned early for agent ID mismatch');
+                return;
+            }
+            // Start WebSocket connection for this conversation
+            const conversationId = data?.conversation_id;
+            if (conversationId) {
+                logForDev('Starting WebSocket connection for conversation:', conversationId);
+                startWebSocketConnection(conversationId);
+            }
+            const transcriptData = data?.transcript ?? '';
+            logForDev('Transcript data:', transcriptData);
+            const response :any = await OpenAIModel(transcriptData);
+            logForDev('GPT response:', JSON.stringify(response));
+            if (!response) {
+                logForDev('WARNING: GPT response is empty for transcript:', transcriptData);
+                res.json({ received: true });
+                logForDev('Returned early for empty GPT response');
+                return;
+            }
+            // Log missing required fields for appointment creation
+            const requiredFields = ['appointment_start_time', 'appointment_finish_time', 'booked_practitioner_id'];
+            const missingFields = requiredFields.filter(f => !response[f]);
+            if (missingFields.length > 0) {
+                logForDev('Missing required fields for appointment creation:', missingFields);
+            }
+            const patientData = {
+                patient: {
+                    title: response?.patient_title ?? 'Mr',
+                    first_name: response?.patient_first_name ?? '',
+                    last_name: response?.patient_last_name ?? '',
+                    date_of_birth: response?.patient_dob ?? '',
+                    gender: response?.patient_gender ?? true,
+                    ethnicity: response?.patient_ethnicity ?? '',
+                    address_line_1: response?.patient_address_line_1 ?? '',
+                    postcode: response?.patient_postcode ?? '',
+                    payment_plan_id: parseInt(response?.patient_payment_plan_id ?? '0'),
+                    payment_plan: [parseInt(response?.patient_payment_plan_id ?? '0')],
+                    email_address: response?.patient_email ?? '',
+                    mobile_phone: response?.patient_phone_number ?? ''
                 }
-            }
-            throw dentallyPatientError;
-        }
-        let createdAppointment: IAppointment | null = null;
-
-        if (createdPatient && createdPatient.id) {
-            appointmentData.appointment.patient_id = createdPatient.id;
-
+            };
+            logForDev('Formatted Patient Data:', patientData);
             if (process.env.NODE_ENV === 'development') {
-                logger.info('[ElevenLabsController] About to call createAppointmentAndStore with:', JSON.stringify(appointmentData));
+                logForDev('About to call createPatientAndStore with:', JSON.stringify(patientData));
             }
+            let createdPatient: any;
             try {
-                createdAppointment = await createAppointmentAndStore(appointmentData);
-                if (process.env.NODE_ENV === 'development') {
-                    logger.info('[ElevenLabsController] Created appointment in Dentally:', JSON.stringify(createdAppointment));
-                }
-            } catch (dentallyAppointmentError) {
-                if (process.env.NODE_ENV === 'development') {
-                    if (dentallyAppointmentError) {
-                        logger.error('[ElevenLabsController] Error from Dentally (appointment creation):', JSON.stringify(dentallyAppointmentError));
-                    } else {
-                        logger.error('[ElevenLabsController] Error from DB or other (appointment creation):', dentallyAppointmentError);
-                    }
-                }
-                throw dentallyAppointmentError;
+                createdPatient = await createPatientAndStore(patientData);
+                logForDev('Created patient in Dentally:', JSON.stringify(createdPatient));
+            } catch (dentallyPatientError) {
+                logForDev('Error from Dentally (patient creation):', dentallyPatientError);
+                throw dentallyPatientError;
             }
-            if (createdAppointment) {
-                try {
-                    const usdtAmount = await getUsdtAmount(
-                        response.patient_status,
-                        response.consultation_type
-                    );
-
-                    if (usdtAmount) {
-                        const patientPhone = response.patient_phone_number;
-                        const patientName = response.patient_first_name || 'Client';
-
-                        const paymentUrl = createStripePaymentLink(usdtAmount);
-                        if (paymentUrl) {
-                            const smsMessage = `Hi ${patientName}, thank you for booking appointment with Wonder of Wellness, kindly pay on the link below to confirm your appointment ${paymentUrl}`;
-                            logger.info('[ElevenLabsController] SMS Message:', smsMessage);
-                            await sendSMS(patientPhone, smsMessage);
-                            logger.info('[ElevenLabsController] Appointment and payment SMS sent successfully.');
-                        }
+            let createdAppointment: IAppointment | null = null;
+            const patientId = createdPatient?.id || createdPatient?.patient?.id;
+            logForDev('Resolved patientId for appointment:', patientId);
+            if (createdPatient && patientId) {
+                const appointmentData = {
+                    appointment: {
+                        start_time: response?.appointment_start_time ?? '',
+                        finish_time: response?.appointment_finish_time ?? '',
+                        patient_id: patientId,
+                        practitioner_id: response?.booked_practitioner_id ?? '',
+                        reason: response?.appointment_reason ?? ''
                     }
-                } catch (error) {
-                    logger.error('[ElevenLabsController] Error processing payment:', error);
+                };
+                logForDev('About to call createAppointmentAndStore with:', JSON.stringify(appointmentData));
+                try {
+                    createdAppointment = await createAppointmentAndStore(appointmentData);
+                    logForDev('Created appointment in Dentally:', JSON.stringify(createdAppointment));
+                } catch (dentallyAppointmentError) {
+                    logForDev('Error from Dentally (appointment creation):', dentallyAppointmentError);
+                    throw dentallyAppointmentError;
+                }
+                if (createdAppointment) {
+                    try {
+                        const usdtAmount = await getUsdtAmount(
+                            response.patient_status,
+                            response.consultation_type
+                        );
+                        logForDev('USDT amount:', usdtAmount);
+                        if (usdtAmount) {
+                            const patientPhone = response.patient_phone_number;
+                            const patientName = response.patient_first_name || 'Client';
+                            const paymentUrl = createStripePaymentLink(usdtAmount);
+                            logForDev('Payment URL:', paymentUrl);
+                            if (paymentUrl) {
+                                const smsMessage = `Hi ${patientName}, thank you for booking appointment with Wonder of Wellness, kindly pay on the link below to confirm your appointment ${paymentUrl}`;
+                                logForDev('SMS Message:', smsMessage);
+                                await sendSMS(patientPhone, smsMessage);
+                                logForDev('Appointment and payment SMS sent successfully.');
+                            }
+                        }
+                    } catch (error) {
+                        logForDev('Error processing payment:', error);
+                    }
+                } else {
+                    logForDev('Failed to create appointment.');
                 }
             } else {
-                logger.error('[ElevenLabsController] Failed to create appointment.');
+                logForDev('No valid patientId, skipping appointment creation.');
+            }
+            // After successful appointment creation, send confirmation via WebSocket
+            if (conversationId && createdAppointment) {
+                logForDev('Sending appointment confirmation via WebSocket');
+                await sendToElevenlabs(conversationId, {
+                    type: 'appointment_confirmation',
+                    data: {
+                        appointment_id: createdAppointment._id.toString(),
+                        start_time: createdAppointment.start_time?.toISOString(),
+                        finish_time: createdAppointment.finish_time?.toISOString(),
+                        practitioner_id: createdAppointment.practitioner_id
+                    }
+                });
+            }
+            logForDev('Final response to client:', { received: true, createdAppointment });
+            if (createdAppointment) {
+                res.json({ received: true, appointment: createdAppointment });
+                logForDev('Returned appointment details to client');
+            } else {
+                res.json({ received: true, appointment: null });
+                logForDev('Returned null appointment to client');
+            }
+        } catch (error) {
+            logForDev('Error in createAppointment:', error);
+            if (error instanceof Error) {
+                res.status(500).json({ received: false, appointment: null, error: error.message });
+                logForDev('Returned 500 error to client:', error.message);
+            } else {
+                res.status(500).json({ received: false, appointment: null, error: 'An unexpected error occurred' });
+                logForDev('Returned 500 error to client: An unexpected error occurred');
             }
         }
+        logForDev('Exiting webhook path');
+        return;
+    }
 
-        // After successful appointment creation, send confirmation via WebSocket
-        if (conversationId && createdAppointment) {
-            await sendToElevenlabs(conversationId, {
-                type: 'appointment_confirmation',
-                data: {
-                    appointment_id: createdAppointment._id.toString(),
-                    start_time: createdAppointment.start_time?.toISOString(),
-                    finish_time: createdAppointment.finish_time?.toISOString(),
-                    practitioner_id: createdAppointment.practitioner_id
+    // --- Direct API call path ---
+    if (event?.patient_first_name && event?.booked_practitioner_id && event?.appointment_start_time) {
+        logForDev('Direct API call path triggered');
+        try {
+            // Build patientData and appointmentData from event
+            const patientData = {
+                patient: {
+                    title: event.patient_title ?? 'Mr',
+                    first_name: event.patient_first_name ?? '',
+                    last_name: event.patient_last_name ?? '',
+                    date_of_birth: event.patient_dob ?? '',
+                    gender: event.patient_gender ?? true,
+                    ethnicity: event.patient_ethnicity ?? '',
+                    address_line_1: event.patient_address_line_1 ?? '',
+                    postcode: event.patient_postcode ?? '',
+                    payment_plan_id: parseInt(event.patient_payment_plan_id ?? '0'),
+                    payment_plan: [parseInt(event.patient_payment_plan_id ?? '0')],
+                    email_address: event.patient_email ?? '',
+                    mobile_phone: event.patient_phone_number ?? ''
                 }
-            });
+            };
+            logForDev('Formatted Patient Data (direct):', patientData);
+            let createdPatient: any;
+            try {
+                createdPatient = await createPatientAndStore(patientData);
+                logForDev('Created patient in Dentally (direct):', JSON.stringify(createdPatient));
+            } catch (dentallyPatientError) {
+                logForDev('Error from Dentally (patient creation, direct):', dentallyPatientError);
+                throw dentallyPatientError;
+            }
+            let createdAppointment: IAppointment | null = null;
+            const patientIdDirect = createdPatient?.id || createdPatient?.patient?.id;
+            logForDev('Resolved patientId for appointment (direct):', patientIdDirect);
+            if (createdPatient && patientIdDirect) {
+                const appointmentData = {
+                    appointment: {
+                        start_time: event.appointment_start_time ?? '',
+                        finish_time: event.appointment_finish_time ?? '',
+                        patient_id: patientIdDirect,
+                        practitioner_id: event.booked_practitioner_id ?? '',
+                        reason: event.appointment_reason ?? ''
+                    }
+                };
+                logForDev('About to call createAppointmentAndStore (direct) with:', JSON.stringify(appointmentData));
+                try {
+                    createdAppointment = await createAppointmentAndStore(appointmentData);
+                    logForDev('Created appointment in Dentally (direct):', JSON.stringify(createdAppointment));
+                } catch (dentallyAppointmentError) {
+                    logForDev('Error from Dentally (appointment creation, direct):', dentallyAppointmentError);
+                    throw dentallyAppointmentError;
+                }
+                if (createdAppointment) {
+                    try {
+                        const usdtAmount = await getUsdtAmount(
+                            event.patient_status,
+                            event.consultation_type
+                        );
+                        logForDev('USDT amount (direct):', usdtAmount);
+                        if (usdtAmount) {
+                            const patientPhone = event.patient_phone_number;
+                            const patientName = event.patient_first_name || 'Client';
+                            const paymentUrl = createStripePaymentLink(usdtAmount);
+                            logForDev('Payment URL (direct):', paymentUrl);
+                            if (paymentUrl) {
+                                const smsMessage = `Hi ${patientName}, thank you for booking appointment with Wonder of Wellness, kindly pay on the link below to confirm your appointment ${paymentUrl}`;
+                                logForDev('SMS Message (direct):', smsMessage);
+                                await sendSMS(patientPhone, smsMessage);
+                                logForDev('Appointment and payment SMS sent successfully (direct).');
+                            }
+                        }
+                    } catch (error) {
+                        logForDev('Error processing payment (direct):', error);
+                    }
+                } else {
+                    logForDev('Failed to create appointment (direct).');
+                }
+            } else {
+                logForDev('No valid patientId (direct), skipping appointment creation.');
+            }
+            logForDev('Final response to client (direct):', { received: true, createdAppointment });
+            if (createdAppointment) {
+                res.json({ received: true, appointment: createdAppointment });
+                logForDev('Returned appointment details to client (direct)');
+            } else {
+                res.json({ received: true, appointment: null });
+                logForDev('Returned null appointment to client (direct)');
+            }
+        } catch (error) {
+            logForDev('Error in createAppointment (direct):', error);
+            if (error instanceof Error) {
+                res.status(500).json({ received: false, appointment: null, error: error.message });
+                logForDev('Returned 500 error to client (direct):', error.message);
+            } else {
+                res.status(500).json({ received: false, appointment: null, error: 'An unexpected error occurred' });
+                logForDev('Returned 500 error to client (direct): An unexpected error occurred');
+            }
         }
+        logForDev('Exiting direct API call path');
+        return;
+    }
 
-        if (process.env.NODE_ENV === 'development') {
-            logger.info('[ElevenLabsController] Final response to client:', { received: true });
+    logForDev('Invalid payload format, returning 400');
+    res.status(400).json({ received: false, error: 'Invalid payload format' });
+};
+
+// New: Get first available practitioner for a given time, duration, and service
+export const getFirstAvailablePractitioner = async (req: Request, res: Response): Promise<void> => {
+    const { start_time, finish_time, duration, service_id } = req.body;
+    if (!start_time || !finish_time || !duration || !service_id) {
+        res.status(400).json({ detail: 'Missing required fields: start_time, finish_time, duration, service_id' });
+        return;
+    }
+    try {
+        // 1. Fetch all active practitioners from Dentally
+        const dentallyApiKey = process.env.DENTALLY_API_KEY;
+        const dentallyBaseUrl = process.env.DENTALLY_BASE_URL || 'https://api.dentally.co/v1';
+        const siteId = process.env.DENTALLY_SITE_ID;
+        const response = await axios.get(`${dentallyBaseUrl}/practitioners`, {
+            headers: {
+                'Authorization': `Bearer ${dentallyApiKey}`,
+                'User-Agent': 'MyApp/1.0',
+            },
+            params: { site_id: siteId }
+        });
+        let practitionersRaw = response.data.practitioners || [];
+        // Filter for active practitioners
+        practitionersRaw = practitionersRaw.filter((doc: any) => doc.active === true);
+        if (practitionersRaw.length === 0) {
+            res.status(404).json({ detail: 'No active practitioners found.' });
+            return;
         }
-        res.json({ received: true });
+        // 2. Shuffle the list
+        for (let i = practitionersRaw.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [practitionersRaw[i], practitionersRaw[j]] = [practitionersRaw[j], practitionersRaw[i]];
+        }
+        // 3. Call getAvailabilityFromDentally with all IDs
+        const practitionerIds = practitionersRaw.map((doc: any) => doc.id);
+        const availabilityData = await getAvailabilityFromDentally(
+            practitionerIds,
+            start_time,
+            finish_time,
+            parseInt(duration)
+        );
+        // 4. Find the first available practitioner in the shuffled list
+        const availableSlots = availabilityData.availability || [];
+        // Map practitioner_id to available slot
+        const availablePractitionerIds = new Set(availableSlots.map((slot: any) => slot.practitioner_id));
+        const firstAvailable = practitionersRaw.find((doc: any) => availablePractitionerIds.has(doc.id));
+        if (!firstAvailable) {
+            res.status(404).json({ detail: 'No practitioners available at the requested time.' });
+            return;
+        }
+        // 5. Return their ID and name
+        res.json({
+            practitioner_id: firstAvailable.id,
+            practitioner_name: `${firstAvailable.user?.first_name || ''} ${firstAvailable.user?.last_name || ''}`.trim(),
+            // For future extensibility:
+            services: [1, 2, 3], // All services for now
+        });
     } catch (error) {
-        if (process.env.NODE_ENV === 'development') {
-            logger.error('[ElevenLabsController] Error in createAppointment:', error);
+        logForDev('Error in getFirstAvailablePractitioner:', error);
+        res.status(500).json({ detail: 'Internal server error' });
+    }
+};
+
+// New: Create patient and book appointment in one step
+export const createPatientAndBookAppointment = async (req: Request, res: Response): Promise<void> => {
+    const { patient, appointment } = req.body;
+    if (!patient || !appointment) {
+        res.status(400).json({ detail: 'Missing required fields: patient, appointment' });
+        return;
+    }
+    // Only require these fields from user
+    const {
+        first_name,
+        last_name,
+        date_of_birth,
+        gender,
+        address_line_1,
+        postcode,
+        mobile_phone
+    } = patient;
+    if (!first_name || !last_name || !date_of_birth || gender === undefined || !address_line_1 || !postcode || !mobile_phone) {
+        res.status(400).json({ detail: 'Missing required patient fields: first_name, last_name, date_of_birth, gender, address_line_1, postcode, mobile_phone' });
+        return;
+    }
+    // Fill defaults for other fields
+    const patientPayload = {
+        title: patient.title || 'Mr',
+        first_name,
+        last_name,
+        date_of_birth,
+        gender,
+        ethnicity: '99', // default as requested
+        address_line_1,
+        postcode,
+        payment_plan_id: patient.payment_plan_id || 1,
+        email_address: patient.email_address || '',
+        mobile_phone,
+    };
+    try {
+        // 1. Create patient in Dentally
+        const createdPatient = await createPatientAndStore({ patient: patientPayload });
+        const patientId = createdPatient?.id || createdPatient?.patient?.id;
+        if (!patientId) {
+            res.status(500).json({ detail: 'Failed to create patient or retrieve patient_id.' });
+            return;
         }
-        // Match FastAPI's HTTPException format
-        if (error instanceof Error) {
-            res.status(500).json({ detail: error.message });
-        } else {
-            res.status(500).json({ detail: 'An unexpected error occurred' });
+        // 2. Book appointment with patient_id
+        const appointmentData = {
+            appointment: {
+                ...appointment,
+                patient_id: patientId
+            }
+        };
+        const createdAppointment = await createAppointmentAndStore(appointmentData);
+        if (!createdAppointment) {
+            res.status(500).json({ detail: 'Failed to create appointment.' });
+            return;
         }
+        res.status(201).json({ appointment: createdAppointment });
+    } catch (error) {
+        logForDev('Error in createPatientAndBookAppointment:', error);
+        res.status(500).json({ detail: 'Internal server error' });
     }
 }; 

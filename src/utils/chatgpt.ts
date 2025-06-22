@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import logger from './logger';
+import logForDev from './logger';
 
 const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY
@@ -40,7 +41,7 @@ ${data}`;
 
     try {
         if (process.env.NODE_ENV === 'development') {
-            logger.info('[OpenAI] Sending prompt:', { prompt });
+            logForDev('[OpenAI] Sending prompt:', { prompt });
         }
         const response = await openai.chat.completions.create({
             model: 'gpt-4',
@@ -50,7 +51,7 @@ ${data}`;
             temperature: 0
         });
         if (process.env.NODE_ENV === 'development') {
-            logger.info('[OpenAI] Raw response:', { response: JSON.stringify(response) });
+            logForDev('[OpenAI] Raw response:', { response: JSON.stringify(response) });
         }
         const responseText = response.choices[0].message.content?.trim() || '';
         const cleanedResponse = responseText.replace('```json\n', '').replace('\n```', '');
@@ -58,9 +59,9 @@ ${data}`;
         return JSON.parse(cleanedResponse);
     } catch (error) {
         if (process.env.NODE_ENV === 'development') {
-            logger.error('[OpenAI] Request failed:', { error });
+            logForDev('[OpenAI] Request failed:', { error });
         }
-        logger.error('OpenAI request failed:', { error });
+        logForDev('OpenAI request failed:', { error });
         return null;
     }
 }; 

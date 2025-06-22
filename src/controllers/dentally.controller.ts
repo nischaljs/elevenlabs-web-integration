@@ -5,7 +5,7 @@ import { Appointment } from '../models/appointment.model';
 import { PaymentPlan } from '../models/payment-plan.model';
 import { Practitioner } from '../models/practitioner.model';
 import { TreatmentDetails } from '../models/treatment-details.model';
-import logger from '../utils/logger';
+import logForDev from '../utils/logger';
 
 // Extend Express Request type to include multer file
 interface MulterRequest extends Request {
@@ -40,7 +40,7 @@ export const getAllDentallyAppointments = async (req: Request, res: Response): P
     const { date } = req.params;
     let validatedDate: string;
     if (process.env.NODE_ENV === 'development') {
-        logger.info('[DentallyController] Incoming request to fetch-all-dentally-appointments:', { params: req.params, query: req.query });
+        logForDev('Incoming request to fetch-all-dentally-appointments:', { params: req.params, query: req.query });
     }
     try {
         validatedDate = validateDateFormat(date);
@@ -57,11 +57,11 @@ export const getAllDentallyAppointments = async (req: Request, res: Response): P
     while (true) {
         const url = `${DENTALLY_BASE_URL}/appointments?on=${validatedDate}&page=${page}&per_page=${perPage}`;
         if (process.env.NODE_ENV === 'development') {
-            logger.info('[DentallyController] Fetching appointments from Dentally:', url);
+            logForDev('Fetching appointments from Dentally:', url);
         }
         const response = await axios.get(url, { headers });
         if (process.env.NODE_ENV === 'development') {
-            logger.info('[DentallyController] Dentally response:', JSON.stringify(response.data));
+            logForDev('Dentally response:', JSON.stringify(response.data));
         }
 
         if (response.status !== 200) {
@@ -101,7 +101,7 @@ export const getAllDentallyAppointments = async (req: Request, res: Response): P
     }
 
     if (process.env.NODE_ENV === 'development') {
-        logger.info('[DentallyController] Final response to client:', res.statusCode === 200 ? res.json() : res.json({ detail: res.statusMessage }));
+        logForDev('Final response to client:', res.statusCode === 200 ? res.json() : res.json({ detail: res.statusMessage }));
     }
 };
 
@@ -114,7 +114,7 @@ const setNestedValue = (dictionary: Record<string, any>, keys: string[], value: 
 
 export const uploadPractitionerExcel = async (req: MulterRequest, res: Response): Promise<void> => {
     if (process.env.NODE_ENV === 'development') {
-        logger.info('[DentallyController] Incoming request to upload-practitioners-excel-file:', { body: req.body, file: req.file });
+        logForDev('Incoming request to upload-practitioners-excel-file:', { body: req.body, file: req.file });
     }
     try {
         if (!req.file) {
@@ -146,7 +146,7 @@ export const uploadPractitionerExcel = async (req: MulterRequest, res: Response)
         }
 
         if (process.env.NODE_ENV === 'development') {
-            logger.info('[DentallyController] Practitioners to insert:', dataToInsert.length);
+            logForDev('Practitioners to insert:', dataToInsert.length);
         }
 
         await Practitioner.deleteMany({});
@@ -158,7 +158,7 @@ export const uploadPractitionerExcel = async (req: MulterRequest, res: Response)
         });
     } catch (error) {
         if (process.env.NODE_ENV === 'development') {
-            logger.error('[DentallyController] Error uploading practitioner Excel:', error);
+            logForDev('Error uploading practitioner Excel:', error);
         }
         if (error instanceof Error) {
             res.status(500).json({ detail: error.message });
@@ -168,13 +168,13 @@ export const uploadPractitionerExcel = async (req: MulterRequest, res: Response)
     }
 
     if (process.env.NODE_ENV === 'development') {
-        logger.info('[DentallyController] Final response to client:', res.statusCode === 200 ? res.json() : res.json({ detail: res.statusMessage }));
+        logForDev('Final response to client:', res.statusCode === 200 ? res.json() : res.json({ detail: res.statusMessage }));
     }
 };
 
 export const uploadMappingExcel = async (req: MulterRequest, res: Response): Promise<void> => {
     if (process.env.NODE_ENV === 'development') {
-        logger.info('[DentallyController] Incoming request to upload-practitioners-mapping-excel-file:', { body: req.body, file: req.file });
+        logForDev('Incoming request to upload-practitioners-mapping-excel-file:', { body: req.body, file: req.file });
     }
     try {
         if (!req.file) {
@@ -213,7 +213,7 @@ export const uploadMappingExcel = async (req: MulterRequest, res: Response): Pro
         }
 
         if (process.env.NODE_ENV === 'development') {
-            logger.info('[DentallyController] Mapping records to insert:', dataToInsert.length);
+            logForDev('Mapping records to insert:', dataToInsert.length);
         }
 
         await TreatmentDetails.insertMany(dataToInsert);
@@ -224,7 +224,7 @@ export const uploadMappingExcel = async (req: MulterRequest, res: Response): Pro
         });
     } catch (error) {
         if (process.env.NODE_ENV === 'development') {
-            logger.error('[DentallyController] Error uploading mapping Excel:', error);
+            logForDev('Error uploading mapping Excel:', error);
         }
         if (error instanceof Error) {
             res.status(500).json({ detail: `Error processing file: ${error.message}` });
@@ -234,18 +234,18 @@ export const uploadMappingExcel = async (req: MulterRequest, res: Response): Pro
     }
 
     if (process.env.NODE_ENV === 'development') {
-        logger.info('[DentallyController] Final response to client:', res.statusCode === 200 ? res.json() : res.json({ detail: res.statusMessage }));
+        logForDev('Final response to client:', res.statusCode === 200 ? res.json() : res.json({ detail: res.statusMessage }));
     }
 };
 
 export const syncPaymentPlans = async (req: Request, res: Response): Promise<void> => {
     if (process.env.NODE_ENV === 'development') {
-        logger.info('[DentallyController] Incoming request to sync-payment-plans:', { body: req.body });
+        logForDev('Incoming request to sync-payment-plans:', { body: req.body });
     }
     try {
         const response = await axios.get(`${DENTALLY_BASE_URL}/payment_plans?active=true`, { headers });
         if (process.env.NODE_ENV === 'development') {
-            logger.info('[DentallyController] Dentally payment plans response:', JSON.stringify(response.data));
+            logForDev('Dentally payment plans response:', JSON.stringify(response.data));
         }
         const data = response.data;
 
@@ -266,7 +266,7 @@ export const syncPaymentPlans = async (req: Request, res: Response): Promise<voi
         });
     } catch (error) {
         if (process.env.NODE_ENV === 'development') {
-            logger.error('[DentallyController] Error syncing payment plans:', error);
+            logForDev('Error syncing payment plans:', error);
         }
         if (error instanceof AxiosError) {
             res.status(502).json({ detail: `Failed to fetch payment plans: ${error.message}` });
@@ -278,6 +278,6 @@ export const syncPaymentPlans = async (req: Request, res: Response): Promise<voi
     }
 
     if (process.env.NODE_ENV === 'development') {
-        logger.info('[DentallyController] Final response to client:', res.statusCode === 200 ? res.json() : res.json({ detail: res.statusMessage }));
+        logForDev('Final response to client:', res.statusCode === 200 ? res.json() : res.json({ detail: res.statusMessage }));
     }
 }; 

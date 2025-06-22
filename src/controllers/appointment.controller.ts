@@ -1,17 +1,17 @@
 import { NextFunction, Request, Response } from 'express';
 import mongoose from 'mongoose';
 import { Appointment } from '../models/appointment.model';
-import logger from '../utils/logger';
+import logForDev from '../utils/logger';
 
 export const listAppointments = async (req: Request, res: Response): Promise<void> => {
     try {
         const appointments = await Appointment.find().limit(100);
         if (process.env.NODE_ENV === 'development') {
-            logger.info('[AppointmentController] Final response to client:', { results: appointments });
+            logForDev('Final response to client:', { results: appointments });
         }
         res.status(200).json({ results: appointments });
     } catch (error) {
-        logger.error('[AppointmentController] Error listing appointments:', error);
+        logForDev('Error listing appointments:', error);
         res.status(500).json({ detail: 'Internal server error' });
     }
 };
@@ -33,11 +33,11 @@ export const getAppointment = async (req: Request, res: Response): Promise<void>
         }
 
         if (process.env.NODE_ENV === 'development') {
-            logger.info('[AppointmentController] Final response to client:', appointment);
+            logForDev('Final response to client:', appointment);
         }
         res.status(200).json(appointment);
     } catch (error) {
-        logger.error('[AppointmentController] Error getting appointment:', error);
+        logForDev('Error getting appointment:', error);
         res.status(500).json({ detail: 'Internal server error' });
     }
 };
@@ -50,7 +50,7 @@ export const createAppointment = async (
     try {
         const appointment = await Appointment.create(req.body);
         if (process.env.NODE_ENV === 'development') {
-            logger.info('[AppointmentController] Final response to client:', appointment);
+            logForDev('Final response to client:', appointment);
         }
         res.status(201).json(appointment);
     } catch (error) {

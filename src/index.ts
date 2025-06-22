@@ -8,7 +8,7 @@ import { connectDB, closeDB } from './config/database';
 import appointmentRoutes from './routes/appointment.routes';
 import dentallyRoutes from './routes/dentally.routes';
 import elevenlabsRoutes from './routes/elevenlabs.routes';
-import logger from './utils/logger';
+import logForDev from './utils/logger';
 
 // Load environment variables
 dotenv.config();
@@ -36,7 +36,7 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Request logging middleware
 app.use((req, res, next) => {
-  logger.info(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+  logForDev(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
   next();
 });
 
@@ -46,7 +46,8 @@ app.use(async (req, res, next) => {
     await connectDB();
     next();
   } catch (error) {
-    logger.error('Database connection failed:', error);
+    logForDev('Database connection failed:');
+    logForDev(error);
     res.status(500).json({
       error: 'Database Error',
       message: 'Database connection failed',
@@ -96,7 +97,7 @@ app.use((req, res) => {
 
 // Error handling middleware
 app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
-  logger.error(err.stack);
+  logForDev(err.stack);
   res.status(500).json({ error: 'Something broke!' });
 });
 
@@ -104,13 +105,14 @@ app.use((err: Error, req: express.Request, res: express.Response, next: express.
 connectDB()
   .then(() => {
     const server = app.listen(port, () => {
-      logger.info(`Server is running on port ${port}`);
+      logForDev(`Server is running on port ${port} in ${process.env.NODE_ENV} mode`);
+      console.log(`Server is running on port ${port} in ${process.env.NODE_ENV} mode`);
     });
 
     // Handle graceful shutdown
     process.on('SIGINT', async () => {
       await closeDB();
-      logger.info(' MongoDB connection closed');
+      logForDev(' MongoDB connection closed');
       process.exit(0);
     });
 
@@ -120,6 +122,7 @@ connectDB()
     });
   })
   .catch((error) => {
-    logger.error('[Server] Failed to start server:', error);
+    logForDev('[Server] Failed to start server:');
+    logForDev(error);
     process.exit(1);
   });

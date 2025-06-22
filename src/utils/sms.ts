@@ -4,7 +4,7 @@
 // import twilio from 'twilio';
 // const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID!, process.env.TWILIO_AUTH_TOKEN!);
 
-import logger from './logger';
+import logForDev from './logger';
 
 export function createStripePaymentLink(usdtAmount: number): string {
   // Stripe integration is not implemented, just return a placeholder
@@ -13,6 +13,6 @@ export function createStripePaymentLink(usdtAmount: number): string {
 
 export const sendSMS = async (to: string, message: string): Promise<boolean> => {
   // Twilio integration is not implemented, just log the message
-  logger.info(`[Stub] Sending SMS to ${to}: ${message}`);
+  logForDev(message);
   return true;
 }; 
