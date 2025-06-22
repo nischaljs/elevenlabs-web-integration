@@ -488,7 +488,34 @@ export const getFirstAvailablePractitioner = async (req: Request, res: Response)
 
 // New: Create patient and book appointment in one step
 export const createPatientAndBookAppointment = async (req: Request, res: Response): Promise<void> => {
-    const { patient, appointment } = req.body;
+    let { patient, appointment } = req.body;
+
+    // If not nested, try to transform from flat structure
+    if (!patient || !appointment) {
+        const flat = req.body;
+        // Check for flat keys
+        const hasFlatPatient = Object.keys(flat).some(key => key.startsWith('patient_'));
+        const hasFlatAppointment = Object.keys(flat).some(key => key.startsWith('appointment_'));
+        if (hasFlatPatient && hasFlatAppointment) {
+            patient = {
+                first_name: flat.patient_first_name,
+                last_name: flat.patient_last_name,
+                date_of_birth: flat.patient_date_of_birth,
+                address_line_1: flat.patient_address_line_1,
+                postcode: flat.patient_postcode,
+                mobile_phone: flat.patient_mobile_phone,
+                email_address: flat.patient_email_address,
+                title: flat.patient_title
+            };
+            appointment = {
+                practitioner_id: flat.appointment_practitioner_id,
+                start_time: flat.appointment_start_time,
+                finish_time: flat.appointment_finish_time,
+                reason: flat.appointment_reason,
+                service_id: flat.appointment_service_id
+            };
+        }
+    }
     if (!patient || !appointment) {
         res.status(400).json({ detail: 'Missing required fields: patient, appointment' });
         return;
