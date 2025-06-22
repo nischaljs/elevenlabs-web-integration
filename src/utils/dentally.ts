@@ -34,11 +34,12 @@ export const createPatientAndStore = async (patientData: any): Promise<any> => {
         await Patient.create(patient);
         logForDev(" Patient created and stored in MongoDB.");
         return response.data;
-    } catch (error) {
-        if (process.env.NODE_ENV === 'development') {
-            logForDev('[DentallyUtils] Error from Dentally patient creation:', error || error);
+    } catch (error: any) {
+        if (error.response && error.response.data) {
+            logForDev('[DentallyUtils] Error from Dentally patient creation:', error.response.data);
+        } else {
+            logForDev('[DentallyUtils] Error from Dentally patient creation:', error);
         }
-        logForDev(" Failed to create patient:", error);
         throw error;
     }
 };
@@ -81,22 +82,26 @@ export const getAvailabilityFromDentally = async (
     duration: number = 60
 ) => {
     try {
-        const response = await axios.get(`${DENTALLY_BASE_URL}/appointments/availability`, {
-            headers, 
-            params: {
-                'practitioner_ids[]': practitionerIds,
-                start_time: startTime,
-                duration,
-                finish_time: finishTime
-            }
+        // Build query string with repeated practitioner_ids[]
+        const params = new URLSearchParams();
+        practitionerIds.forEach(id => params.append('practitioner_ids[]', id.toString()));
+        params.append('start_time', startTime);
+        params.append('finish_time', finishTime);
+        params.append('duration', duration.toString());
+        const url = `${DENTALLY_BASE_URL}/appointments/availability?${params.toString()}`;
+        logForDev('[DentallyUtils] Fetching availability with URL:', url);
+        const response = await fetch(url, {
+            method: 'GET',
+            headers
         });
-
-        if (response.status === 200) {
-            logForDev('[Dentally response for availability check]',response.data);
-            return response.data;
+        if (!response.ok) {
+            const errorText = await response.text();
+            logForDev('[DentallyUtils] Error fetching availability:', response.status, errorText);
+            return [];
         }
-        logForDev('[DentallyUtils] Error fetching availability:', response.status, response.data);
-        return [];
+        const data = await response.json();
+        logForDev('[Dentally response for availability check]', data);
+        return data;
     } catch (error) {
         logForDev('[DentallyUtils] Error fetching availability:', error);
         return [];

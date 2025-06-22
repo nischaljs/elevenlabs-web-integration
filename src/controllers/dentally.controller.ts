@@ -21,7 +21,8 @@ if (!DENTALLY_API_KEY) {
 
 const headers = {
     'Authorization': `Bearer ${DENTALLY_API_KEY}`,
-    'Content-Type': 'application/json'
+    'Content-Type': 'application/json',
+    'User-Agent': 'MyApp/1.0'
 };
 
 const validateDateFormat = (dateStr: string): string => {

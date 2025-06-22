@@ -1,5 +1,4 @@
 import { Request, Response } from 'express';
-import { Practitioner } from '../models/practitioner.model';
 import { OpenAIModel } from '../utils/chatgpt';
 import { createAppointmentAndStore, createPatientAndStore, getAvailabilityFromDentally } from '../utils/dentally';
 import { verifyElevenLabsWebhookSignature } from '../utils/elevenlabs';
@@ -7,7 +6,12 @@ import { createStripePaymentLink, sendSMS } from '../utils/sms';
 import { startWebSocketConnection, stopWebSocketConnection, sendToElevenlabs } from '../utils/websockets';
 import { IAppointment } from '../models/appointment.model';
 import logForDev from '../utils/logger';
-import axios from 'axios';
+import {
+  fetchActivePractitioners,
+  shufflePractitioners,
+  batchCheckAvailability,
+  findFirstAvailableOrRecommend
+} from '../utils/availabilityUtils';
 
 const ELEVENLABS_AGENT_ID = process.env.ELEVENLABS_AGENT_ID;
 
@@ -18,117 +22,112 @@ interface AvailabilitySlot {
 
 export const getPractitioners = async (req: Request, res: Response): Promise<void> => {
     try {
-        // Fetch practitioners from Dentally API
-        const dentallyApiKey = process.env.DENTALLY_API_KEY;
-        const dentallyBaseUrl = process.env.DENTALLY_BASE_URL || 'https://api.dentally.co/v1';
-        const siteId = process.env.DENTALLY_SITE_ID; // Use env variable for site ID
-        const response = await axios.get(`${dentallyBaseUrl}/practitioners`, {
-            headers: {
-                'Authorization': `Bearer ${dentallyApiKey}`,
-                'User-Agent': 'MyApp/1.0',
-            },
-            params: { site_id: siteId }
-        });
-        const practitionersRaw = response.data.practitioners || [];
-        logForDev('Practitioners from Dentally:', JSON.stringify(practitionersRaw.slice(0, 5)));
-
-        // Log the total number of practitioners received
-        logForDev('Total practitioners from Dentally:', practitionersRaw.length);
-
-        // Filter for active practitioners
-        const activePractitioners = practitionersRaw.filter((doc: any) => doc.active === true);
-        logForDev('Active practitioners count:', activePractitioners.length);
-
-        // Log the first 10 active practitioners' names and IDs
-        activePractitioners.slice(0, 10).forEach((doc: any, i: number) => {
-          logForDev(`Active Practitioner #${i}:`, doc.user?.first_name, doc.user?.last_name, 'ID:', doc.id);
-        });
-
-        if (activePractitioners.length === 0) {
-           // Fallback: fetch from local MongoDB
-           const dbPractitioners = await Practitioner.find({ active: true }).lean();
-           logForDev('Fetched active practitioners from DB:', dbPractitioners.length);
-           if (dbPractitioners.length === 0) {
-             res.json({ text: "Sorry, no active practitioners are currently available." });
-             return;
-           }
-           const formattedDb = dbPractitioners
-             .map((doc: any) => `${doc.user?.first_name || ''} ${doc.user?.last_name || ''} (${doc.id})`)
-             .join('; ');
-           res.json({ text: `Here are the available practitioners: ${formattedDb}` });
-           return;
+        logForDev('[getPractitioners] Fetching practitioners...');
+        const practitionersRaw = await fetchActivePractitioners();
+        logForDev('[getPractitioners] Practitioners fetched:', practitionersRaw.length);
+        if (!practitionersRaw || practitionersRaw.length === 0) {
+            res.json({ text: "Sorry, no active practitioners are currently available." });
+            return;
         }
-
-        const formatted = activePractitioners
-          .map((doc: any) => `${doc.user?.first_name || ''} ${doc.user?.last_name || ''} (${doc.id})`)
-          .join('; ');
-
+        // Log the first 10 practitioners' names and IDs
+        practitionersRaw.slice(0, 10).forEach((doc: any, i: number) => {
+            logForDev(`[getPractitioners] Practitioner #${i}:`, doc.user?.first_name, doc.user?.last_name, 'ID:', doc.id);
+        });
+        const formatted = practitionersRaw
+            .map((doc: any) => `${doc.user?.first_name || ''} ${doc.user?.last_name || ''} (${doc.id})`)
+            .join('; ');
         res.json({ text: `Here are the available practitioners: ${formatted}` });
     } catch (error) {
-        logForDev('Error getting practitioners from Dentally:', error);
+        logForDev('[getPractitioners] Error:', error);
         res.status(500).json({ detail: 'Internal server error' });
     }
 };
 
 export const checkAvailableTime = async (req: Request, res: Response): Promise<void> => {
     const { practitioner_id, start_time, finish_time, duration } = req.params;
-    
+    logForDev(`[checkAvailableTime] Called with practitioner_id=${practitioner_id}, start_time=${start_time}, finish_time=${finish_time}, duration=${duration}`);
     // FastAPI-style parameter validation
     const practitionerId = parseInt(practitioner_id);
     if (isNaN(practitionerId)) {
+        logForDev('[checkAvailableTime] practitioner_id must be a number');
         res.status(400).json({ detail: 'practitioner_id must be a number' });
         return;
     }
-    
     const durationNum = parseInt(duration);
     if (isNaN(durationNum)) {
+        logForDev('[checkAvailableTime] duration must be a number');
         res.status(400).json({ detail: 'duration must be a number' });
         return;
     }
-
     // Robust date parsing and correction
     let start = new Date(start_time);
     if (isNaN(start.getTime())) {
-        // Try parsing as local date, fallback to now
+        logForDev('[checkAvailableTime] Invalid start_time, parsing fallback');
         start = new Date(Date.parse(start_time) || Date.now());
     }
     let finish = new Date(finish_time);
     if (isNaN(finish.getTime()) || (finish.getTime() - start.getTime()) < 24 * 60 * 60 * 1000) {
-        // If finish_time is invalid or window < 24h, set finish_time to start_time + 25h
+        logForDev('[checkAvailableTime] Invalid or too short finish_time, setting to start + 25h');
         finish = new Date(start.getTime() + 25 * 60 * 60 * 1000);
     }
-    // Convert both to ISO8601 with timezone (toISOString gives Zulu/UTC)
     const startISO = start.toISOString();
     const finishISO = finish.toISOString();
-
+    logForDev(`[checkAvailableTime] Parsed startISO=${startISO}, finishISO=${finishISO}`);
     try {
         const availabilityData = await getAvailabilityFromDentally(
             [practitionerId],
-            startISO,
+            startISO, 
             finishISO,
             durationNum
         );
-
-        if (!availabilityData.availability) {
+        logForDev('[checkAvailableTime] Dentally availabilityData:', JSON.stringify(availabilityData));
+        const slots = (availabilityData as any).availability || [];
+        if (slots.length === 0) {
+            logForDev('[checkAvailableTime] No available slots for this practitioner.');
             res.json({
                 available_slots: '',
-                message: 'You can book an appointment with this practitioner at any time slot.You Want'
+                message: 'No available slots for this practitioner in the requested window.'
             });
             return;
         }
-
-        const slotTimes = availabilityData.availability.map((slot: AvailabilitySlot) => 
-            `${slot.start_time} to  ${slot.finish_time}`
-        );
+        // Check if requested time is available
+        const requestedStart = new Date(start_time).getTime();
+        let requestedSlot = slots.find((slot: any) => new Date(slot.start_time).getTime() === requestedStart);
+        if (requestedSlot) {
+            logForDev('[checkAvailableTime] Requested time is available.');
+            const slotTimes = slots.map((slot: AvailabilitySlot) => `${slot.start_time} to  ${slot.finish_time}`);
+            const slotString = slotTimes.join(',');
+            res.json({
+                available_slots: slotString,
+                message: 'Available time slots are'
+            });
+            return;
+        }
+        // If not available, recommend the closest slot
+        let closestSlot = null;
+        let minDiff = Infinity;
+        for (const slot of slots) {
+            const slotStart = new Date(slot.start_time).getTime();
+            const diff = Math.abs(slotStart - requestedStart);
+            if (diff < minDiff) {
+                minDiff = diff;
+                closestSlot = slot;
+            }
+        }
+        logForDev('[checkAvailableTime] Requested time not available, recommending closest slot:', JSON.stringify(closestSlot));
+        const slotTimes = slots.map((slot: AvailabilitySlot) => `${slot.start_time} to  ${slot.finish_time}`);
         const slotString = slotTimes.join(',');
-
         res.json({
             available_slots: slotString,
-            message: 'Available time slots are'
+            message: 'Requested time not available. Here are other available slots.',
+            recommended_slot: closestSlot ? {
+                start_time: closestSlot.start_time,
+                finish_time: closestSlot.finish_time
+            } : null
         });
     } catch (error) {
-        // Match FastAPI's error response format
-        res.status(500).json({ available_slots: " ",message: 'Something Went Wrong in Backend' });
+        logForDev('[checkAvailableTime] Error:', error);
+        res.status(500).json({ available_slots: " ", message: 'Something Went Wrong in Backend' });
     }
 };
 
@@ -422,59 +421,65 @@ export const createAppointment = async (req: Request, res: Response): Promise<vo
 
 // New: Get first available practitioner for a given time, duration, and service
 export const getFirstAvailablePractitioner = async (req: Request, res: Response): Promise<void> => {
-    const { start_time, finish_time, duration, service_id } = req.body;
-    if (!start_time || !finish_time || !duration || !service_id) {
-        res.status(400).json({ detail: 'Missing required fields: start_time, finish_time, duration, service_id' });
+    let { start_time, duration, service_id } = req.body;
+    if (!start_time || !service_id) {
+        res.status(400).json({ detail: 'Missing required fields: start_time, service_id' });
         return;
     }
+    // Validate that start_time is in the future
+    const now = new Date();
+    const startDate = new Date(start_time);
+    if (isNaN(startDate.getTime())) {
+        res.status(400).json({ detail: 'Invalid start_time format' });
+        return;
+    }
+    if (startDate <= now) {
+        res.status(400).json({ detail: 'start_time must be in the future' });
+        return;
+    }
+    // Default duration to 60 if not provided
+    if (!duration) {
+        duration = 60;
+        logForDev('[getFirstAvailablePractitioner] duration not provided, defaulting to 60 minutes');
+    }
+    // Always set finish_time to 25 hours after start_time, ignore frontend value
+    let finish_time = new Date(startDate.getTime() + 25 * 60 * 60 * 1000).toISOString();
+    logForDev('[getFirstAvailablePractitioner] finish_time is set to 25 hours after start_time:', finish_time);
     try {
-        // 1. Fetch all active practitioners from Dentally
-        const dentallyApiKey = process.env.DENTALLY_API_KEY;
-        const dentallyBaseUrl = process.env.DENTALLY_BASE_URL || 'https://api.dentally.co/v1';
-        const siteId = process.env.DENTALLY_SITE_ID;
-        const response = await axios.get(`${dentallyBaseUrl}/practitioners`, {
-            headers: {
-                'Authorization': `Bearer ${dentallyApiKey}`,
-                'User-Agent': 'MyApp/1.0',
-            },
-            params: { site_id: siteId }
-        });
-        let practitionersRaw = response.data.practitioners || [];
-        // Filter for active practitioners
-        practitionersRaw = practitionersRaw.filter((doc: any) => doc.active === true);
-        if (practitionersRaw.length === 0) {
+        logForDev('[getFirstAvailablePractitioner] Fetching practitioners...');
+        let practitionersRaw = await fetchActivePractitioners();
+        if (!practitionersRaw || practitionersRaw.length === 0) {
             res.status(404).json({ detail: 'No active practitioners found.' });
-            return;
+            return;git
         }
-        // 2. Shuffle the list
-        for (let i = practitionersRaw.length - 1; i > 0; i--) {
-            const j = Math.floor(Math.random() * (i + 1));
-            [practitionersRaw[i], practitionersRaw[j]] = [practitionersRaw[j], practitionersRaw[i]];
-        }
-        // 3. Call getAvailabilityFromDentally with all IDs
+        practitionersRaw = shufflePractitioners(practitionersRaw);
         const practitionerIds = practitionersRaw.map((doc: any) => doc.id);
-        const availabilityData = await getAvailabilityFromDentally(
-            practitionerIds,
-            start_time,
-            finish_time,
-            parseInt(duration)
-        );
-        // 4. Find the first available practitioner in the shuffled list
-        const availableSlots = availabilityData.availability || [];
-        // Map practitioner_id to available slot
-        const availablePractitionerIds = new Set(availableSlots.map((slot: any) => slot.practitioner_id));
-        const firstAvailable = practitionersRaw.find((doc: any) => availablePractitionerIds.has(doc.id));
-        if (!firstAvailable) {
-            res.status(404).json({ detail: 'No practitioners available at the requested time.' });
+        const availableSlots = await batchCheckAvailability(practitionerIds, start_time, finish_time, parseInt(duration));
+        let result = findFirstAvailableOrRecommend(availableSlots, practitionersRaw, start_time);
+        if (result.practitioner_id) {
+            res.json({
+                practitioner_id: result.practitioner_id,
+                practitioner_name: result.practitioner_name,
+                available_slots: result.available_slots,
+                services: [1, 2, 3], // All services for now
+            });
             return;
         }
-        // 5. Return their ID and name
-        res.json({
-            practitioner_id: firstAvailable.id,
-            practitioner_name: `${firstAvailable.user?.first_name || ''} ${firstAvailable.user?.last_name || ''}`.trim(),
-            // For future extensibility:
-            services: [1, 2, 3], // All services for now
-        });
+        // If no slots, expand window by 7 days and try again
+        if (!result.recommended_slot) {
+            logForDev('[getFirstAvailablePractitioner] No slots in window, expanding by 7 days...');
+            const widerFinish = new Date(startDate.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
+            const widerSlots = await batchCheckAvailability(practitionerIds, start_time, widerFinish, parseInt(duration));
+            result = findFirstAvailableOrRecommend(widerSlots, practitionersRaw, start_time);
+        }
+        if (result.recommended_slot) {
+            res.status(404).json({
+                detail: 'No available slots for any practitioner in the requested window.',
+                recommended_slot: result.recommended_slot
+            });
+            return;
+        }
+        res.status(404).json({ detail: 'No available slots for any practitioner in the requested window.' });
     } catch (error) {
         logForDev('Error in getFirstAvailablePractitioner:', error);
         res.status(500).json({ detail: 'Internal server error' });
@@ -501,7 +506,8 @@ export const createPatientAndBookAppointment = async (req: Request, res: Respons
         res.status(400).json({ detail: 'Missing required patient fields: first_name, last_name, date_of_birth, address_line_1, postcode, mobile_phone' });
         return;
     }
-    // Fill defaults for other fields, always set gender to true
+    // Fill defaults for other fields, always set gender to true (male), ethnicity to '99', payment_plan_id and payment_plan to 1
+    const planId = 44651;
     const patientPayload = {
         title: patient.title || 'Mr',
         first_name,
@@ -511,7 +517,7 @@ export const createPatientAndBookAppointment = async (req: Request, res: Respons
         ethnicity: '99', // default as requested
         address_line_1,
         postcode,
-        payment_plan_id: patient.payment_plan_id || 1,
+        payment_plan_id: planId,
         email_address: patient.email_address || '',
         mobile_phone,
     };
