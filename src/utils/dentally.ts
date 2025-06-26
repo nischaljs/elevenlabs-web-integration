@@ -58,19 +58,32 @@ export const createAppointmentAndStore = async (appointmentData: any): Promise<I
         const appointment = apiResponse.appointment;
 
         if (!appointment) {
-            logger.error(" API response does not contain 'appointment' key.");
+            logger.error("API response does not contain 'appointment' key.");
             return null;
         }
 
         // Save to MongoDB
         const createdAppointment = await Appointment.create(appointment);
-        logger.info(" Appointment created and stored in MongoDB.");
+        logger.info('Appointment created and stored in MongoDB.');
         return createdAppointment;
-    } catch (error) {
-        if (process.env.NODE_ENV === 'development') {
-            logger.error('[DentallyUtils] Error from Dentally appointment creation:', error);
+    } catch (error: any) {
+        // Human-readable error logging
+        if (error.response && error.response.data && error.response.data.error) {
+            const dentallyError = error.response.data.error;
+            if (dentallyError.params && dentallyError.params.practitioner_id && Array.isArray(dentallyError.params.practitioner_id)) {
+                if (dentallyError.params.practitioner_id.some((msg: string) => msg.includes('existing appointment'))) {
+                    logger.error('Dentally: Practitioner already has an appointment in this period.');
+                } else {
+                    logger.error(`Dentally: Practitioner error: ${JSON.stringify(dentallyError.params.practitioner_id)}`);
+                }
+            } else {
+                logger.error(`Dentally: ${dentallyError.message || 'Unknown error from Dentally.'}`);
+            }
+        } else if (error.message) {
+            logger.error(`Dentally: ${error.message}`);
+        } else {
+            logger.error('Dentally: Unknown error occurred during appointment creation.');
         }
-        logger.error(" Failed to create appointment:", error);
         return null;
     }
 };

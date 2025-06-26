@@ -107,4 +107,26 @@ export function findFirstAvailableOrRecommend(slots: any[], practitioners: any[]
     available_slots: [],
     recommended_slot: null
   };
+}
+
+/**
+ * Splits an available block into slots of the required duration.
+ * @param {string} blockStart - ISO string of block start time
+ * @param {string} blockEnd - ISO string of block end time
+ * @param {number} slotDuration - Slot duration in minutes
+ * @returns {Array<{start_time: string, finish_time: string}>}
+ */
+export function splitBlockIntoSlots(blockStart: string, blockEnd: string, slotDuration: number) {
+  const slots = [];
+  let start = new Date(blockStart);
+  const end = new Date(blockEnd);
+  while (start.getTime() + slotDuration * 60000 <= end.getTime()) {
+    const finish = new Date(start.getTime() + slotDuration * 60000);
+    slots.push({
+      start_time: start.toISOString(),
+      finish_time: finish.toISOString(),
+    });
+    start = finish;
+  }
+  return slots;
 } 
