@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { Practitioner } from '../models/practitioner.model';
 import { getAvailabilityFromDentally } from './dentally';
-import logForDev from './logger';
+import logger from './logger';
 
 // Fetch all active practitioners (Dentally, fallback to MongoDB)
 export async function fetchActivePractitioners() {
@@ -9,7 +9,7 @@ export async function fetchActivePractitioners() {
     const dentallyApiKey = process.env.DENTALLY_API_KEY;
     const dentallyBaseUrl = process.env.DENTALLY_BASE_URL || 'https://api.dentally.co/v1';
     const siteId = process.env.DENTALLY_SITE_ID;
-    logForDev('[fetchActivePractitioners] Fetching from Dentally...');
+    logger.info('[fetchActivePractitioners] Fetching from Dentally...');
     const response = await axios.get(`${dentallyBaseUrl}/practitioners`, {
       headers: {
         'Authorization': `Bearer ${dentallyApiKey}`,
@@ -18,29 +18,29 @@ export async function fetchActivePractitioners() {
       params: { site_id: siteId }
     });
     let practitionersRaw = response.data.practitioners || [];
-    logForDev('[fetchActivePractitioners] Practitioners from Dentally:', practitionersRaw.length);
+    logger.info('[fetchActivePractitioners] Practitioners from Dentally:', practitionersRaw.length);
     practitionersRaw = practitionersRaw.filter((doc: any) => doc.active === true);
     if (practitionersRaw.length > 0) {
-      logForDev('[fetchActivePractitioners] Active practitioners from Dentally:', practitionersRaw.length);
+      logger.info('[fetchActivePractitioners] Active practitioners from Dentally:', practitionersRaw.length);
       return practitionersRaw;
     }
     // Fallback to MongoDB
-    logForDev('[fetchActivePractitioners] No active practitioners from Dentally, falling back to MongoDB...');
+    logger.info('[fetchActivePractitioners] No active practitioners from Dentally, falling back to MongoDB...');
     const dbPractitioners = await Practitioner.find({ active: true }).lean();
-    logForDev('[fetchActivePractitioners] Active practitioners from DB:', dbPractitioners.length);
+    logger.info('[fetchActivePractitioners] Active practitioners from DB:', dbPractitioners.length);
     return dbPractitioners;
   } catch (error) {
-    logForDev('[fetchActivePractitioners] Error:', error);
+    logger.error('[fetchActivePractitioners] Error:', error);
     // Fallback to MongoDB
     const dbPractitioners = await Practitioner.find({ active: true }).lean();
-    logForDev('[fetchActivePractitioners] Active practitioners from DB (after error):', dbPractitioners.length);
+    logger.info('[fetchActivePractitioners] Active practitioners from DB (after error):', dbPractitioners.length);
     return dbPractitioners;
   }
 }
 
 // Shuffle practitioners
 export function shufflePractitioners(practitioners: any[]) {
-  logForDev('[shufflePractitioners] Shuffling practitioners...');
+  logger.info('[shufflePractitioners] Shuffling practitioners...');
   for (let i = practitioners.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [practitioners[i], practitioners[j]] = [practitioners[j], practitioners[i]];
@@ -50,22 +50,22 @@ export function shufflePractitioners(practitioners: any[]) {
 
 // Batch check availability
 export async function batchCheckAvailability(practitionerIds: number[], start: string, finish: string, duration: number) {
-  logForDev('[batchCheckAvailability] Checking availability for practitioners:', practitionerIds);
+  logger.info('[batchCheckAvailability] Checking availability for practitioners:', practitionerIds);
   const availabilityData = await getAvailabilityFromDentally(practitionerIds, start, finish, duration);
-  logForDev('[batchCheckAvailability] Availability data:', JSON.stringify(availabilityData));
+  logger.info('[batchCheckAvailability] Availability data:', JSON.stringify(availabilityData));
   return (availabilityData as any).availability || [];
 }
 
 // Find first available practitioner and recommend closest slot
 export function findFirstAvailableOrRecommend(slots: any[], practitioners: any[], requestedStart: string) {
-  logForDev('[findFirstAvailableOrRecommend] Finding first available or closest slot...');
+  logger.info('[findFirstAvailableOrRecommend] Finding first available or closest slot...');
   const availablePractitionerIds = new Set(slots.map((slot: any) => slot.practitioner_id));
   const firstAvailable = practitioners.find((doc: any) => availablePractitionerIds.has(doc.id));
   if (firstAvailable) {
     const slotsForPractitioner = slots
       .filter((slot: any) => slot.practitioner_id === firstAvailable.id)
       .map((slot: any) => ({ start_time: slot.start_time, finish_time: slot.finish_time }));
-    logForDev('[findFirstAvailableOrRecommend] First available practitioner:', firstAvailable.id);
+    logger.info('[findFirstAvailableOrRecommend] First available practitioner:', firstAvailable.id);
     return {
       practitioner_id: firstAvailable.id,
       practitioner_name: `${firstAvailable.user?.first_name || ''} ${firstAvailable.user?.last_name || ''}`.trim(),
@@ -87,7 +87,7 @@ export function findFirstAvailableOrRecommend(slots: any[], practitioners: any[]
   }
   if (closestSlot) {
     const practitioner = practitioners.find((doc: any) => doc.id === closestSlot.practitioner_id);
-    logForDev('[findFirstAvailableOrRecommend] Closest slot found:', closestSlot.start_time);
+    logger.info('[findFirstAvailableOrRecommend] Closest slot found:', closestSlot.start_time);
     return {
       practitioner_id: null,
       practitioner_name: null,
@@ -100,7 +100,7 @@ export function findFirstAvailableOrRecommend(slots: any[], practitioners: any[]
       }
     };
   }
-  logForDev('[findFirstAvailableOrRecommend] No slots found.');
+  logger.info('[findFirstAvailableOrRecommend] No slots found.');
   return {
     practitioner_id: null,
     practitioner_name: null,

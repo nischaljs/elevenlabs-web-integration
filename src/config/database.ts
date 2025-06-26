@@ -34,4 +34,7 @@ export const closeDB = async () => {
 };
 
 // Export the mongoose connection for direct access if needed
-export const db = mongoose.connection; 
+export const db = mongoose.connection;
+
+// Utility to check if mongoose is connected
+export const isDBConnected = () => mongoose.connection.readyState === 1; 

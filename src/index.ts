@@ -1,14 +1,11 @@
-import express from 'express';
 import cors from 'cors';
-import helmet from 'helmet';
 import dotenv from 'dotenv';
+import express from 'express';
+import helmet from 'helmet';
 import morgan from 'morgan';
-import mongoose from 'mongoose';
-import { connectDB, closeDB } from './config/database';
-import appointmentRoutes from './routes/appointment.routes';
-import dentallyRoutes from './routes/dentally.routes';
+import { closeDB, connectDB, isDBConnected } from './config/database';
 import elevenlabsRoutes from './routes/elevenlabs.routes';
-import logForDev from './utils/logger';
+import logger from './utils/logger';
 
 // Load environment variables
 dotenv.config();
@@ -17,10 +14,20 @@ const app = express();
 const port = process.env.PORT || 3000;
 
 // Logging middleware
-app.use(morgan('dev'));
+app.use(morgan('combined'));
 
 // Security middleware
-app.use(helmet());
+app.use(helmet({
+    contentSecurityPolicy: {
+        directives: {
+            defaultSrc: ["'self'"],
+            styleSrc: ["'self'", "'unsafe-inline'"],
+            scriptSrc: ["'self'"],
+            imgSrc: ["'self'", "data:", "https:"],
+        },
+    },
+}));
+
 app.use(
   cors({
     origin: process.env.CORS_ORIGIN || '*',
@@ -36,55 +43,43 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Request logging middleware
 app.use((req, res, next) => {
-  logForDev(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+  logger.info(`[${new Date().toISOString()}] ${req.method} ${req.url} - IP: ${req.ip}`);
   next();
-});
-
-// Database connection check middleware
-app.use(async (req, res, next) => {
-  try {
-    await connectDB();
-    next();
-  } catch (error) {
-    logForDev('Database connection failed:');
-    logForDev(error);
-    res.status(500).json({
-      error: 'Database Error',
-      message: 'Database connection failed',
-    });
-  }
 });
 
 // Root route
 app.get('/', (req, res) => {
-  res.json({ message: 'Hello World' });
+  res.json({ 
+    message: 'ElevenLabs Integration Server',
+    version: '1.0.0',
+    status: 'operational'
+  });
 });
 
-// Routes with /api/v1 prefix to match FastAPI
-app.use('/api/v1', appointmentRoutes);
-app.use('/api/v1', dentallyRoutes);
+// Apply rate limiting to ElevenLabs routes
 app.use('/api/v1', elevenlabsRoutes);
 
+// Health check endpoint for API versioning
+app.get('/api/v1/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    message: 'API is healthy',
+  });
+});
+
 // Health check endpoint
-app.get('/health', async (req, res) => {
-  try {
-    // Check database connection
-    await connectDB();
-    res.json({
-      status: 'ok',
-      timestamp: new Date().toISOString(),
-      uptime: process.uptime(),
-      database: 'connected',
-    });
-  } catch (error) {
-    res.status(500).json({
-      status: 'error',
-      timestamp: new Date().toISOString(),
-      uptime: process.uptime(),
-      database: 'disconnected',
-      error: error instanceof Error ? error.message : 'Unknown error',
-    });
-  }
+app.get('/health', (req, res) => {
+  // Only check mongoose connection state, do not reconnect
+  const dbState = isDBConnected() ? 'connected' : 'disconnected';
+  res.json({
+    status: dbState === 'connected' ? 'ok' : 'error',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    database: dbState,
+    memory: process.memoryUsage(),
+  });
 });
 
 // 404 handler
@@ -97,32 +92,44 @@ app.use((req, res) => {
 
 // Error handling middleware
 app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
-  logForDev(err.stack);
-  res.status(500).json({ error: 'Something broke!' });
+  logger.error('Error:', err.stack);
+  res.status(500).json({ 
+    error: 'Internal Server Error',
+    message: process.env.NODE_ENV === 'development' ? err.message : 'Something went wrong'
+  });
 });
 
 // Start server
 connectDB()
   .then(() => {
     const server = app.listen(port, () => {
-      logForDev(`Server is running on port ${port} in ${process.env.NODE_ENV} mode`);
-      console.log(`Server is running on port ${port} in ${process.env.NODE_ENV} mode`);
+      logger.info(`Server is running on port ${port} in ${process.env.NODE_ENV} mode`);
+      console.log(`🚀 Server is running on port ${port} in ${process.env.NODE_ENV} mode`);
     });
 
     // Handle graceful shutdown
     process.on('SIGINT', async () => {
+      logger.info('Received SIGINT, shutting down gracefully...');
       await closeDB();
-      logForDev(' MongoDB connection closed');
+      logger.info('MongoDB connection closed');
+      server.close(() => {
+        logger.info('Server closed');
       process.exit(0);
+      });
     });
 
     process.on('SIGTERM', async () => {
+      logger.info('Received SIGTERM, shutting down gracefully...');
       await closeDB();
+      logger.info('MongoDB connection closed');
+      server.close(() => {
+        logger.info('Server closed');
       process.exit(0);
+      });
     });
   })
   .catch((error) => {
-    logForDev('[Server] Failed to start server:');
-    logForDev(error);
+    logger.error('[Server] Failed to start server:');
+    logger.error(error);
     process.exit(1);
   });

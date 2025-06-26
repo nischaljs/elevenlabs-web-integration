@@ -7,6 +7,7 @@ export interface IPractitionerBase {
     first_name?: string;
     last_name?: string;
   };
+  services?: number[]; // Array of service IDs
 }
 
 export interface IPractitionerCreate extends IPractitionerBase {}
@@ -21,7 +22,8 @@ const PractitionerSchema = new Schema<IPractitioner>({
   user: {
     first_name: { type: String, required: false },
     last_name: { type: String, required: false }
-  }
+  },
+  services: { type: [Number], required: false } // Array of service IDs
 }, {
   timestamps: true,
   versionKey: false

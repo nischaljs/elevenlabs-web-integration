@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { Patient } from '../models/patient.model';
 import { Appointment, IAppointment } from '../models/appointment.model';
-import logForDev from './logger';
+import logger from './logger';
 
 const DENTALLY_API_KEY = process.env.DENTALLY_API_KEY;
 const DENTALLY_BASE_URL = process.env.DENTALLY_BASE_URL;
@@ -14,31 +14,31 @@ const headers = {
 
 export const createPatientAndStore = async (patientData: any): Promise<any> => {
     if (process.env.NODE_ENV === 'development') {
-        logForDev('[DentallyUtils] Sending patient creation payload to Dentally:', JSON.stringify(patientData));
+        logger.info('[DentallyUtils] Sending patient creation payload to Dentally:', JSON.stringify(patientData));
     }
     const url = `${DENTALLY_BASE_URL}/patients`;
     try {
         const response = await axios.post(url, patientData, { headers });
         if (process.env.NODE_ENV === 'development') {
-            logForDev('[DentallyUtils] Dentally patient creation response:', JSON.stringify(response.data));
+            logger.info('[DentallyUtils] Dentally patient creation response:', JSON.stringify(response.data));
         }
         const apiResponse = response.data;
         const patient = apiResponse.patient;
 
         if (!patient) {
-            logForDev(" API response does not contain 'patient' key.");
+            logger.error(" API response does not contain 'patient' key.");
             return false;
         }
 
         // Save to MongoDB
         await Patient.create(patient);
-        logForDev(" Patient created and stored in MongoDB.");
+        logger.info(" Patient created and stored in MongoDB.");
         return response.data;
     } catch (error: any) {
         if (error.response && error.response.data) {
-            logForDev('[DentallyUtils] Error from Dentally patient creation:', error.response.data);
+            logger.error('[DentallyUtils] Error from Dentally patient creation:', error.response.data);
         } else {
-            logForDev('[DentallyUtils] Error from Dentally patient creation:', error);
+            logger.error('[DentallyUtils] Error from Dentally patient creation:', error);
         }
         throw error;
     }
@@ -46,31 +46,31 @@ export const createPatientAndStore = async (patientData: any): Promise<any> => {
 
 export const createAppointmentAndStore = async (appointmentData: any): Promise<IAppointment | null> => {
     if (process.env.NODE_ENV === 'development') {
-        logForDev('[DentallyUtils] Sending appointment creation payload to Dentally:', JSON.stringify(appointmentData));
+        logger.info('[DentallyUtils] Sending appointment creation payload to Dentally:', JSON.stringify(appointmentData));
     }
     const url = `${DENTALLY_BASE_URL}/appointments`;
     try {
         const response = await axios.post(url, appointmentData, { headers });
         if (process.env.NODE_ENV === 'development') {
-            logForDev('[DentallyUtils] Dentally appointment creation response:', JSON.stringify(response.data));
+            logger.info('[DentallyUtils] Dentally appointment creation response:', JSON.stringify(response.data));
         }
         const apiResponse = response.data;
         const appointment = apiResponse.appointment;
 
         if (!appointment) {
-            logForDev(" API response does not contain 'appointment' key.");
+            logger.error(" API response does not contain 'appointment' key.");
             return null;
         }
 
         // Save to MongoDB
         const createdAppointment = await Appointment.create(appointment);
-        logForDev(" Appointment created and stored in MongoDB.");
+        logger.info(" Appointment created and stored in MongoDB.");
         return createdAppointment;
     } catch (error) {
         if (process.env.NODE_ENV === 'development') {
-            logForDev('[DentallyUtils] Error from Dentally appointment creation:', error);
+            logger.error('[DentallyUtils] Error from Dentally appointment creation:', error);
         }
-        logForDev(" Failed to create appointment:", error);
+        logger.error(" Failed to create appointment:", error);
         return null;
     }
 };
@@ -89,21 +89,21 @@ export const getAvailabilityFromDentally = async (
         params.append('finish_time', finishTime);
         params.append('duration', duration.toString());
         const url = `${DENTALLY_BASE_URL}/appointments/availability?${params.toString()}`;
-        logForDev('[DentallyUtils] Fetching availability with URL:', url);
+        logger.info('[DentallyUtils] Fetching availability with URL:', url);
         const response = await fetch(url, {
             method: 'GET',
             headers
         });
         if (!response.ok) {
             const errorText = await response.text();
-            logForDev('[DentallyUtils] Error fetching availability:', response.status, errorText);
+            logger.error('[DentallyUtils] Error fetching availability:', response.status, errorText);
             return [];
         }
         const data = await response.json();
-        logForDev('[Dentally response for availability check]', data);
+        logger.info('[Dentally response for availability check]', data);
         return data;
     } catch (error) {
-        logForDev('[DentallyUtils] Error fetching availability:', error);
+        logger.error('[DentallyUtils] Error fetching availability:', error);
         return [];
     }
 }; 
